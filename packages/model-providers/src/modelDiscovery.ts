@@ -2,6 +2,7 @@ import {
   pickModelMetadata,
   type DiscoveredModel,
 } from "./modelMetadataLayers.js";
+import { effortRank } from "./effortResolution.js";
 
 /** Unknown levels must not turn into an explicit disable of cached capabilities. */
 function parseReasoningOptions(value: unknown): unknown {
@@ -83,6 +84,7 @@ export function parseModelsListResponse(
             context_window?: unknown;
             max_context_length?: unknown;
             max_input_tokens?: unknown;
+            max_context_window?: unknown;
           })
         : null;
     const name = google && typeof google.displayName === 'string' ? google.displayName :
@@ -144,7 +146,9 @@ export function parseModelsListResponse(
     const modalities = record.modalities ??
       (Array.isArray(architecture?.input_modalities) && Array.isArray(architecture?.output_modalities)
         ? { input: architecture.input_modalities, output: architecture.output_modalities } : undefined);
-    const inputModalities = (modalities as { input?: unknown } | undefined)?.input;
+    const inputModalities = (modalities as { input?: unknown } | undefined)?.input ?? record.input_modalities;
+    const contextWindowMax = pickModelMetadata({ contextWindowMax: record.max_context_window ?? record.contextWindowMax }).contextWindowMax;
+    const serviceTiers = record.service_tiers;
     const isVercel = sourceUrl !== undefined && (() => {
       try { const url = new URL(sourceUrl); return url.origin === 'https://ai-gateway.vercel.sh'
         && url.pathname.replace(/\/+$/, '') === '/v1/models'; } catch { return false; }
@@ -152,7 +156,8 @@ export function parseModelsListResponse(
     // Vercel marks image/video/etc. as type, but Cindy chat import only executes language models.
     // Keep them out of the picker instead of saving a mode that later disappears from every list.
     if (isVercel && record.type !== undefined && record.type !== 'language') continue;
-    const discoveredMetadata = pickModelMetadata({
+    const discoveredMetadata = { ...pickModelMetadata(record), ...pickModelMetadata({
+      nativeApi: record.nativeApi !== undefined ? record.nativeApi : record.native_api,
       ...([rec?.display_name, rec?.name, google?.displayName].some(
         (value) => typeof value === "string" && value.trim().length > 0,
       )
@@ -165,6 +170,7 @@ export function parseModelsListResponse(
       group: record.group,
       contextWindow:
         typeof rawWindow === "number" ? Math.floor(rawWindow) : info.max_input_tokens,
+      contextWindowMax,
       maxOutputTokens:
         record.max_output_tokens ?? info.max_output_tokens ?? google?.outputTokenLimit ??
         record.maxOutputTokens ??
@@ -193,13 +199,38 @@ export function parseModelsListResponse(
         : info.supports_function_calling ?? capabilities.trained_for_tool_use,
       reasoningRequired: reasoning?.required ?? reasoning?.mandatory,
       defaultEffort: rawDefault === "none" ? null : rawDefault,
-      supportsFastMode: record.supports_fast_mode ?? record.supportsServiceTier,
+      supportsFastMode: record.supports_fast_mode ?? record.supportsServiceTier ??
+        (Array.isArray(serviceTiers) && serviceTiers.every(tier =>
+          tier && typeof tier === 'object' && typeof tier.id === 'string')
+          ? serviceTiers.some(tier => tier.id === 'priority') : undefined),
       supportsImageInput:
         record.supports_image_input ?? info.supports_vision ?? capabilities.vision ??
-        (Array.isArray(inputModalities)
+        (Array.isArray(inputModalities) && inputModalities.every(value => typeof value === 'string')
           ? inputModalities.includes("image")
           : undefined),
-    });
+    }) };
+    // A scalar declaration proves that one level, not an entire model-family ladder.
+    // Never replace an explicit list (even malformed/unknown) with the default.
+    if (discoveredMetadata.efforts === undefined && [
+      record.efforts, reasoning?.supportedEfforts, reasoning?.supported_efforts,
+      record.supported_efforts, record.supported_reasoning_levels, record.reasoningEfforts,
+      ...(isVercel ? [record.reasoning_options] : []),
+    ].every(value => value === undefined)) {
+      const scalarEffort = pickModelMetadata({ defaultEffort: rawDefault }).defaultEffort;
+      if (scalarEffort) discoveredMetadata.efforts = [scalarEffort];
+    }
+    // Slider consumers use array position as intensity; provider order is not semantic.
+    if (discoveredMetadata.efforts) {
+      discoveredMetadata.efforts = [...discoveredMetadata.efforts]
+        .sort((a, b) => effortRank(a) - effortRank(b));
+    }
+    // Check the normalized pair so every spelling (including model_info) obeys
+    // the same capacity constraint, without discarding the valid working window.
+    if (discoveredMetadata.contextWindowMax !== undefined &&
+      discoveredMetadata.contextWindow !== undefined &&
+      discoveredMetadata.contextWindowMax < discoveredMetadata.contextWindow) {
+      delete discoveredMetadata.contextWindowMax;
+    }
     // OpenRouter and Vercel document USD per token. Never apply these units to arbitrary proxies.
     const prices =
       sourceUrl && (isOpenRouterModelsUrl(sourceUrl) || (isVercel && record.type === 'language'))
