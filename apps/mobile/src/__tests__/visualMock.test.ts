@@ -140,15 +140,16 @@ it('does not resurrect pin/archive/rename mutations on list refresh or reseed', 
   const id = 'visual-prompt-recommendation';
   const patch = (value: object) => link.invoke(device, 'local-db:sessions:patch-meta', [id, value]);
   const list = (status = 'active') => link.invoke<import('@/session/types').RemoteSession[]>(device, 'local-db:sessions:list', [100, status, { includePinned: true, fresh: true }]);
-  await patch({ pinnedAt: '2026-09-28T12:00:00.000Z', title: 'Renamed' });
+  const updatedAt = (await list()).find((s) => s.id === id)!.updatedAt;
+  await expect(patch({ pinnedAt: '2026-09-28T12:00:00.000Z', title: 'Renamed' })).resolves.toMatchObject({ updatedAt });
   mock.seedVisualMockStore();
   expect((await list()).find((s) => s.id === id)).toMatchObject({ title: 'Renamed', pinnedAt: '2026-09-28T12:00:00.000Z' });
-  await patch({ pinnedAt: null });
+  await expect(patch({ pinnedAt: null })).resolves.toMatchObject({ updatedAt });
   expect((await list()).find((s) => s.id === id)?.pinnedAt).toBeNull();
-  await patch({ status: 'archived' });
+  await expect(patch({ status: 'archived' })).resolves.toMatchObject({ updatedAt });
   expect((await list()).some((s) => s.id === id)).toBe(false);
   expect((await list('archived')).some((s) => s.id === id)).toBe(true);
-  await patch({ status: 'active' });
+  await expect(patch({ status: 'active' })).resolves.toMatchObject({ updatedAt });
   expect((await list()).some((s) => s.id === id)).toBe(true);
   await patch({ status: 'deleted' });
   expect((await list('all')).some((s) => s.id === id)).toBe(false);
@@ -184,4 +185,24 @@ it('rejects invalid bulk tag operations atomically and protects returned snapsho
   const reordered = await execute({ action: 'reorder', tagIds: [b.id, id], expectedOrder: [id, b.id] });
   expect(reordered.tags.map((t) => t.id)).toEqual([b.id, id]);
   await expect(execute({ action: 'reorder', tagIds: [id, b.id], expectedOrder: [id, b.id] })).rejects.toMatchObject({ code: 'CONFLICT' });
+});
+
+it('normalizes legacy none colors in create and update without advertising none', async () => {
+  const mock = await import('@/debug/visualMock');
+  const link = mock.createVisualMockDeviceLinkContext();
+  const execute = (r: import('@cindy/maker-shared').TaskTagRequest) => link.invoke<import('@cindy/maker-shared').TaskTagResult>(mock.VISUAL_MOCK_DEVICE_ID, 'local-db:task-tags:execute', [r]);
+  const created = await execute({ action: 'create', name: 'Legacy', color: 'none' });
+  const tag = created.tags.find((t) => t.name === 'Legacy')!;
+  expect(tag.color).toBe('white');
+  expect(created.supportedColors).toContain('white');
+  expect(created.supportedColors).not.toContain('none');
+  const attached = await execute({ action: 'attach', sessionIds: ['visual-prompt-recommendation'], tagIds: [tag.id] });
+  let current = attached.tags.find((t) => t.id === tag.id)!;
+  const blue = await execute({ action: 'update', tagId: tag.id, revision: current.revision, color: 'blue' });
+  current = blue.tags.find((t) => t.id === tag.id)!;
+  await execute({ action: 'update', tagId: tag.id, revision: current.revision, color: 'none' });
+  const read = await execute({ action: 'get', sessionIds: ['visual-prompt-recommendation'] });
+  expect(read.sessions[0].tags[0].color).toBe('white');
+  expect(read.tags.find((t) => t.id === tag.id)?.color).toBe('white');
+  expect(read.supportedColors).not.toContain('none');
 });

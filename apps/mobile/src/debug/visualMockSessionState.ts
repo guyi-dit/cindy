@@ -40,7 +40,7 @@ export class VisualMockSessionState {
       (patch.title !== undefined && (!patch.title.trim() || patch.title.length > 500)) ||
       (patch.status !== undefined && !["active", "archived", "deleted"].includes(patch.status)) ||
       (patch.pinnedAt != null && !Number.isFinite(Date.parse(patch.pinnedAt)))) fail("INVALID_PARAMS");
-    const updated = { ...current, ...patch, updatedAt: new Date().toISOString() };
+    const updated = { ...current, ...patch };
     this.sessions = this.sessions.map((s) => s.id === id ? updated : s);
     return clone(updated);
   }
@@ -75,7 +75,7 @@ export class VisualMockSessionState {
         do { id = "visual-tag-" + ++this.nextTagId; } while (this.tags.some((t) => t.id === id));
         id = request.presetId ?? id;
         if (this.tags.some((t) => t.id === id)) fail("ALREADY_EXISTS");
-        this.tags.push({ id, name: request.name.trim(), color: request.color, favoriteOrder: order,
+        this.tags.push({ id, name: request.name.trim(), color: request.color === "none" ? "white" : request.color, favoriteOrder: order,
           sortOrder: Math.max(-1, ...this.tags.map((t) => t.sortOrder ?? -1)) + 1, revision: 1 });
         break;
       }
@@ -85,7 +85,8 @@ export class VisualMockSessionState {
         const name = request.name?.trim() ?? current.name;
         validate(name, request.color ?? current.color, current.id);
         const order = request.favorite === false ? null : request.favorite && current.favoriteOrder === null ? favoriteOrder() : current.favoriteOrder;
-        Object.assign(current, { name, color: request.color ?? current.color, favoriteOrder: order,
+        const color = request.color ?? current.color;
+        Object.assign(current, { name, color: color === "none" ? "white" : color, favoriteOrder: order,
           nameCustomized: current.nameCustomized || request.nameCustomized || name !== current.name, revision: current.revision + 1 });
         break;
       }
@@ -138,7 +139,7 @@ export class VisualMockSessionState {
     }
     this.tags.sort(compareTaskTags);
     this.sessions = this.sessions.map((s) => ({ ...s, tags: this.tags.filter((t) => s.tags?.some((old) => old.id === t.id)) }));
-    return clone({ tags: this.tags, supportedColors: [...TASK_TAG_COLORS, "none"],
+    return clone({ tags: this.tags, supportedColors: [...TASK_TAG_COLORS],
       sessions: affected.map((id) => ({ sessionId: id, tags: this.get(id).tags ?? [] })),
       ...(deletion ? { deletion } : {}), ...(hasMore !== undefined ? { hasMore } : {}) });
   }

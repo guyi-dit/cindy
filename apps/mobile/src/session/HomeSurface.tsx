@@ -2694,7 +2694,12 @@ function HomeScreenContent({ active = true, onModeChange, width, onDismiss, newS
           if (section.key !== 'pinned' || !section.title) return null;
           return (
             <Pressable
-              accessibilityLabel={t('devices.list.a11y.pinnedConversations', { count: sharedGroup.home.pinned.length })}
+              accessibilityLabel={[
+                t('devices.list.a11y.pinnedConversations', { count: sharedGroup.home.pinned.length }),
+                pinnedCollapsed && pinnedRunningCount > 0
+                  ? t('session.row.pinnedRunning', { count: pinnedRunningCount })
+                  : null,
+              ].filter(Boolean).join(', ')}
               accessibilityRole="button"
               accessibilityState={{ expanded: !pinnedCollapsed }}
               onPress={togglePinned}
